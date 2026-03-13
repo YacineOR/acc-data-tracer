@@ -1,0 +1,86 @@
+ACC Data Tracer
+
+Author : Yacine Ould Rouis - Barcelona Supercomputing Center (BSC) - yacine.ouldrouis@bsc.es
+
+Small tool to trace OpenACC GPU data allocations using NV_ACC_NOTIFY and
+visualize them as a timeline.
+
+The tool records GPU allocation events, timestamps them, adds the MPI rank
+when available, and generates a JSON report that can be visualized in a browser.
+
+Files
+
+acc-data-trace.py
+    Wrapper that runs a command, timestamps its output, records MPI ranks
+    when available, and generates the raw trace log.
+
+acc_pipeline_prepare.py
+    Parses the raw trace log and produces a JSON report describing GPU
+    allocation lifetimes.
+
+acc-data-view.html
+    Browser interface to visualize the GPU memory timeline.
+
+
+Usage
+
+Run the tracer before your normal command. Everything after "--" is executed
+exactly as you would normally run it.
+
+Examples
+
+MPI using mpirun:
+
+    ./acc-data-trace.py -out report.json -- mpirun -np 4 --bind-to none ./alya cavnas
+
+MPI using srun (Slurm):
+
+    ./acc-data-trace.py -out report.json -- srun -n 4 ./alya cavnas
+
+Serial execution:
+
+    ./acc-data-trace.py -out report.json -- ./app
+
+
+What the wrapper does
+
+- sets NV_ACC_NOTIFY=18
+- timestamps every output line
+- detects MPI ranks when possible
+- writes a trace log
+- runs acc_pipeline_prepare.py to generate the JSON report
+
+
+Output
+
+log file (default: out)
+
+    Raw trace log with timestamps and ranks
+
+    Example:
+        [0.123456][rank=0] create CUDA data ...
+        [0.123789][rank=1] alloc CUDA data ...
+
+JSON report (default: report.json)
+
+    Processed allocation timeline used by the viewer.
+
+
+Visualization
+
+Open the viewer in a browser:
+
+    acc-data-view.html
+
+Load the generated JSON file to display the GPU allocation timeline.
+
+
+Notes
+
+- The wrapper works with mpirun, srun, or plain serial execution.
+- For mpirun the wrapper automatically injects "--tag-output".
+- For srun the wrapper automatically injects "--label".
+- If the application crashes, the partial trace is still processed and
+  the JSON report is generated.
+
+
