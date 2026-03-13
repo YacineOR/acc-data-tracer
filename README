@@ -11,8 +11,7 @@ when available, and generates a JSON report that can be visualized in a browser.
 Files
 
 acc-data-trace.py
-    Wrapper that runs a command, timestamps its output, records MPI ranks
-    when available, and generates the raw trace log.
+    Wrapper that instruments and runs a command line, and parses execution logs into a json report (using acc_pipeline_prepare.py).
 
 acc_pipeline_prepare.py (internal)
     Parses the raw trace log and produces a JSON report describing GPU
