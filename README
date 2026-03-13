@@ -14,7 +14,7 @@ acc-data-trace.py
     Wrapper that runs a command, timestamps its output, records MPI ranks
     when available, and generates the raw trace log.
 
-acc_pipeline_prepare.py
+acc_pipeline_prepare.py (internal)
     Parses the raw trace log and produces a JSON report describing GPU
     allocation lifetimes.
 
