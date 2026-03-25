@@ -729,29 +729,9 @@ function closeContextMenu(){ contextMenu.classList.add('hidden'); }
 function openDirectiveModal(text){ directiveText.textContent = text || 'No ACC directive text available for this entry.'; directiveModal.classList.remove('hidden'); }
 function closeDirectiveModal(){ directiveModal.classList.add('hidden'); }
 
-function normalizeData(data){
-  if (!data || !Array.isArray(data.groups)) throw new Error('Expected top-level { groups: [...] } JSON');
-
-  const allEvents = [];
-  let seq = 0;
-  for (const srcGroup of data.groups){
-    for (const ev of (Array.isArray(srcGroup.rows) ? srcGroup.rows : [])){
-      allEvents.push({
-        ...ev,
-        _seq: seq++,
-        name: ev.name ?? srcGroup.name ?? 'unnamed',
-        file: ev.file ?? srcGroup.file ?? '',
-        line: ev.line ?? srcGroup.line ?? '',
-        function: ev.function ?? srcGroup.function ?? '',
-        site_label: ev.site_label ?? srcGroup.site_label ?? '',
-        directive_text: ev.directive_text ?? srcGroup.directive_text ?? '',
-        rank: ev.rank ?? srcGroup.rank ?? null,
-      });
-    }
-  }
-
+function groupEventsForDisplay(events){
   const grouped = new Map();
-  for (const ev of allEvents){
+  for (const ev of events){
     const gk = displayGroupKey(ev);
     if (!grouped.has(gk)) {
       grouped.set(gk, {
@@ -768,7 +748,7 @@ function normalizeData(data){
     grouped.get(gk).rows.push(ev);
   }
 
-  const rows = [...grouped.values()].map((g, idx) => ({
+  return [...grouped.values()].map((g, idx) => ({
     ...g,
     _color: LEFT_BG[idx % LEFT_BG.length],
     _firstSeq: Math.min(...g.rows.map(ev => ev._seq ?? Number.MAX_SAFE_INTEGER)),
@@ -780,14 +760,30 @@ function normalizeData(data){
       return (a._seq ?? 0) - (b._seq ?? 0);
     })
   }));
+}
+
+function normalizeData(data){
+  if (!data || !Array.isArray(data.tracks)) throw new Error('Expected top-level { tracks: [...] } JSON');
+
+  const allEvents = data.tracks.map((ev, idx) => ({
+    ...ev,
+    _seq: idx,
+    name: ev.name ?? 'unnamed',
+    file: ev.file ?? '',
+    line: ev.line ?? '',
+    function: ev.function ?? '',
+    site_label: ev.site_label ?? '',
+    directive_text: ev.directive_text ?? '',
+    rank: ev.rank ?? null,
+  }));
+
+  const rows = groupEventsForDisplay(allEvents);
 
   const starts = [];
   const ends = [];
-  for (const g of rows){
-    for (const ev of g.rows){
-      if (Number.isFinite(ev.start)) starts.push(ev.start);
-      if (Number.isFinite(ev.end)) ends.push(ev.end);
-    }
+  for (const ev of allEvents){
+    if (Number.isFinite(ev.start)) starts.push(ev.start);
+    if (Number.isFinite(ev.end)) ends.push(ev.end);
   }
 
   let minT = starts.length ? Math.min(...starts) : 0;
@@ -796,7 +792,7 @@ function normalizeData(data){
   if (!(maxT > minT)) maxT = minT + 1;
 
   const rankValues = [...new Set(allEvents.map(ev => ev.rank).filter(v => v != null))].sort((a,b)=>a-b);
-  return { rows, minT, maxT, totalEvents: allEvents.length, rankValues };
+  return { events: allEvents, rows, minT, maxT, totalEvents: allEvents.length, rankValues };
 }
 
 function buildViewRows(){
@@ -805,11 +801,11 @@ function buildViewRows(){
   const mode = sortMode.value;
   const selectedRank = rankFilter.value;
 
-  let baseRows = rawData.rows.map(g => ({
-    ...g,
-    rows: g.rows.filter(ev => selectedRank === 'all' || String(ev.rank) === selectedRank)
-  })).filter(g => g.rows.length > 0)
-    .filter(g => !maskedGroupKeys.has(g._groupKey));
+  const filteredEvents = rawData.events
+    .filter(ev => selectedRank === 'all' || String(ev.rank) === selectedRank)
+    .filter(ev => !maskedGroupKeys.has(displayGroupKey(ev)));
+
+  let baseRows = groupEventsForDisplay(filteredEvents);
 
   if (mode === 'alpha') {
     baseRows.sort((a,b) => `${a.name}|${a.file}|${a.line}`.localeCompare(`${b.name}|${b.file}|${b.line}`));
@@ -917,7 +913,7 @@ function setSummary(){
     matchCountEl.textContent = '';
     return;
   }
-  const totalEvents = rawData.totalEvents ?? rawData.rows.reduce((a,g)=>a + g.rows.length, 0);
+  const totalEvents = rawData.totalEvents ?? rawData.events.length;
   const visibleEvents = renderedRows.reduce((a,r)=>a + r.rows.length, 0);
   const q = searchInput.value.trim().toLowerCase();
   const matchCount = q ? renderedRows.filter(r => r._match).length : 0;
