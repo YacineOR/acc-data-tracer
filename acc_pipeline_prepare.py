@@ -657,26 +657,6 @@ def prepare_tracks(events):
     return tracks, hierarchy_warnings, end_t
 
 
-def group_tracks(tracks):
-    groups = defaultdict(list)
-    for tr in tracks:
-        groups[tr["name"]].append(tr)
-
-    out = []
-    for name, rows in groups.items():
-        rows = sorted(rows, key=lambda x: (x["start"], x["id"]))
-        out.append({
-            "name": name,
-            "rows": rows,
-            "first_start": rows[0]["start"],
-            "file": rows[0]["file"],
-            "function": rows[0]["function"],
-            "line": rows[0]["line"],
-            "site_label": rows[0]["site_label"],
-        })
-
-    out.sort(key=lambda x: (x["first_start"], x["name"]))
-    return out
 
 
 def main():
@@ -689,8 +669,9 @@ def main():
 
     events, has_timestamps = parse_log(infile)
     tracks, hierarchy_warnings, end_t = prepare_tracks(events)
-    groups = group_tracks(tracks)
 
+    tracks = sorted(tracks, key=lambda x: (x["start"], x["id"]))
+    
     payload = {
         "meta": {
             "source_file": infile,
@@ -699,7 +680,8 @@ def main():
             "num_tracks": len(tracks),
             "end_t": end_t,
         },
-        "groups": groups,
+        "groups": [],
+        "tracks": tracks,
         "hierarchy_warnings": hierarchy_warnings,
     }
 
