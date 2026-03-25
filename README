@@ -39,7 +39,7 @@ MPI using srun (Slurm):
 
 Serial execution:
 
-    ./acc-data-trace.py -out report.json -- ./app
+    ./acc-data-trace.py -out report.json -- ./unitt_adr_3d_openacc
 
 
 What the wrapper does
@@ -47,15 +47,15 @@ What the wrapper does
 - sets NV_ACC_NOTIFY=18
 - timestamps every output line
 - detects MPI ranks when possible
-- writes a trace log
-- runs acc_pipeline_prepare.py to generate the JSON report
+- writes an execution log
+- runs acc_pipeline_prepare.py to parse the log and generate the JSON report
 
 
 Output
 
 log file (default: out)
 
-    Raw trace log with timestamps and ranks
+    execution logs + timestamps and ranks for each line
 
     Example:
         [0.123456][rank=0] create CUDA data ...
@@ -73,14 +73,3 @@ Open the viewer in a browser:
     acc-data-view.html
 
 Load the generated JSON file to display the GPU allocation timeline.
-
-
-Notes
-
-- The wrapper works with mpirun, srun, or plain serial execution.
-- For mpirun the wrapper automatically injects "--tag-output".
-- For srun the wrapper automatically injects "--label".
-- If the application crashes, the partial trace is still processed and
-  the JSON report is generated.
-
-
