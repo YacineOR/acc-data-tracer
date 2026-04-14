@@ -136,6 +136,14 @@
     z-index:25;
   }
 
+  .endShade{
+    position:absolute;
+    top:0;
+    bottom:0;
+    background:rgba(107,114,128,.16);
+    pointer-events:none;
+  }
+
   .bodyScroller{
     grid-column:1 / span 2;
     grid-row:2;
@@ -227,7 +235,8 @@
   .rowLabel:hover{ background:#f8fafc; }
   .rowLabel.matchRow{ background:#fde68a; }
   .rowLabel.matchRow:hover{ background:#fcd34d; }
-  .timelineRow.matchRow{ background:#fff7cc; }
+  .timelineRow.matchRow{ background:#fde68a; }
+  .timelineRow.matchRow:hover{ background:#fcd34d; }
   .groupRow{ background:#fcfcfd; }
   .childRow{ padding-left:22px; }
 
@@ -237,6 +246,22 @@
     border-radius:3px;
     border:1px solid #94a3b8;
     flex:0 0 10px;
+  }
+
+  .swatch.leak{
+    border:1px solid #dc2626;
+  }
+
+  .swatch.mediumConfidence{
+    opacity:.6;
+  }
+
+  .swatch.lowConfidence{
+    opacity:.3;
+  }
+
+  .swatch.leak{
+    border:2px solid #dc2626;
   }
 
   .leftText{
@@ -324,6 +349,14 @@
 
   .eventBar.noEnd{
     border:2px solid #dc2626;
+  }
+
+  .eventBar.mediumConfidence{
+    opacity:.6;
+  }
+
+  .eventBar.lowConfidence{
+    opacity:.3;
   }
 
   .bodySelection{
@@ -484,6 +517,13 @@
   <label>Rank
     <select id="rankFilter"></select>
   </label>
+  <label>Confidence
+    <select id="confidenceFilter">
+      <option value="high" selected>high</option>
+      <option value="medium">medium</option>
+      <option value="low">low</option>
+    </select>
+  </label>
   <label><input id="zoomOutBtn" type="button" value="−" /></label>
   <label><input id="fitBtn" type="button" value="fit" /></label>
   <label><input id="zoomInBtn" type="button" value="+" /></label>
@@ -495,6 +535,7 @@
   <div class="rightHeader">
     <div id="tickViewport" class="tickViewport">
       <div id="tickContent" class="tickContent"></div>
+      <div id="headerEndShade" class="endShade"></div>
       <div id="headerSelection" class="headerSelection hidden"></div>
     </div>
   </div>
@@ -543,6 +584,7 @@ const clearSearchBtn = document.getElementById('clearSearchBtn');
 const matchCountEl = document.getElementById('matchCount');
 const sortMode = document.getElementById('sortMode');
 const rankFilter = document.getElementById('rankFilter');
+const confidenceFilter = document.getElementById('confidenceFilter');
 const zoomOutBtn = document.getElementById('zoomOutBtn');
 const fitBtn = document.getElementById('fitBtn');
 const zoomInBtn = document.getElementById('zoomInBtn');
@@ -555,6 +597,7 @@ const timelineLayer = document.getElementById('timelineLayer');
 const tickViewport = document.getElementById('tickViewport');
 const tickContent = document.getElementById('tickContent');
 const headerSelection = document.getElementById('headerSelection');
+const headerEndShade = document.getElementById('headerEndShade');
 const leftBottomScrollWrap = document.getElementById('leftBottomScrollWrap');
 const leftBottomScrollInner = document.getElementById('leftBottomScrollInner');
 const bottomScrollWrap = document.getElementById('bottomScrollWrap');
@@ -573,6 +616,10 @@ const closeDirectiveBtn = document.getElementById('closeDirectiveBtn');
 const bodySelection = document.createElement('div');
 bodySelection.id = 'bodySelection';
 bodySelection.className = 'bodySelection hidden';
+const bodyEndShade = document.createElement('div');
+bodyEndShade.id = 'bodyEndShade';
+bodyEndShade.className = 'endShade';
+timelineLayer.appendChild(bodyEndShade);
 timelineLayer.appendChild(bodySelection);
 
 let rawData = null;
@@ -582,6 +629,8 @@ let timeMax = 1;
 let pxPerTime = 0.2;
 let expandedCounts = new Map();
 let hoverRAF = null;
+let metaEndT = null;
+let displayMaxT = null;
 let hoverTimer = null;
 let hoverX = 0;
 let hoverY = 0;
@@ -651,7 +700,24 @@ function allocIdentityKey(ev){ return `${allocSiteKey(ev)}|${ev.addr || ''}`; }
 function displayGroupKey(ev){ return `${ev.name || ''}|${ev.file || ''}|${ev.line || ''}`; }
 
 function getEventEnd(ev){
-  return Number.isFinite(ev.end) ? ev.end : timeMax;
+  return Number.isFinite(ev.end) ? ev.end : (Number.isFinite(metaEndT) ? metaEndT : timeMax);
+}
+
+function getDisplaySpan(){
+  return Math.max(1e-12, timeMax - timeMin);
+}
+
+function getTrackConfidenceBucket(ev){
+  if (ev.track_kind !== 'reuse') return 'high';
+  return ev.inferred_confidence || 'low';
+}
+
+function passesConfidenceFilter(ev){
+  const level = confidenceFilter.value || 'low';
+  const bucket = getTrackConfidenceBucket(ev);
+  if (level === 'high') return bucket === 'high';
+  if (level === 'medium') return bucket === 'high' || bucket === 'medium';
+  return true;
 }
 
 function eventMatches(ev, q){
@@ -681,10 +747,12 @@ function getEventTooltip(ev, row){
   const endLine = ev.end == null
     ? 'end: <span class="tooltipLineAlert">not deallocated</span>'
     : `end: ${escapeHtml(fmtTime(ev.end))}`;
+  const conf = ev.track_kind === 'first_alloc' ? 'exact' : (ev.inferred_confidence || 'low');
   return `
     <div>path: ${escapeHtml(path)}</div>
     <div>routine: ${escapeHtml(routine)}</div>
     <div>rank: ${escapeHtml(rankText)}</div>
+    <div>confidence: ${escapeHtml(conf)}</div>
     <div>size: ${escapeHtml(fmtBytes(ev.size))}</div>
     <div>addr: ${escapeHtml(ev.addr || '—')}</div>
     <div>start: ${escapeHtml(fmtTime(ev.start))}</div>
@@ -723,6 +791,14 @@ function openContextMenu(x, y, path, addr = '', maskKey = '', directive = ''){
   contextMenu.style.left = `${x}px`;
   contextMenu.style.top = `${y}px`;
   contextMenu.classList.remove('hidden');
+  const rect = contextMenu.getBoundingClientRect();
+  const margin = 8;
+  let left = x;
+  let top = y;
+  if (rect.right > window.innerWidth - margin) left = Math.max(margin, x - rect.width);
+  if (rect.bottom > window.innerHeight - margin) top = Math.max(margin, y - rect.height);
+  contextMenu.style.left = `${left}px`;
+  contextMenu.style.top = `${top}px`;
 }
 
 function closeContextMenu(){ contextMenu.classList.add('hidden'); }
@@ -775,6 +851,8 @@ function normalizeData(data){
     site_label: ev.site_label ?? '',
     directive_text: ev.directive_text ?? '',
     rank: ev.rank ?? null,
+    track_kind: ev.track_kind ?? 'first_alloc',
+    inferred_confidence: ev.inferred_confidence ?? null,
   }));
 
   const rows = groupEventsForDisplay(allEvents);
@@ -787,12 +865,14 @@ function normalizeData(data){
   }
 
   let minT = starts.length ? Math.min(...starts) : 0;
-  let maxT = ends.length ? Math.max(...ends) : null;
-  if (!Number.isFinite(maxT)) maxT = Number.isFinite(data?.meta?.end_t) ? data.meta.end_t : (starts.length ? Math.max(...starts) : 1);
+  const computedEndT = ends.length ? Math.max(...ends) + 1.0 : 1.0;
+  const logicalEndT = Number.isFinite(data?.meta?.end_t) ? data.meta.end_t : computedEndT;
+  let maxT = logicalEndT;
   if (!(maxT > minT)) maxT = minT + 1;
+  const pad = Math.max((maxT - minT) * 0.03, 1e-9);
 
   const rankValues = [...new Set(allEvents.map(ev => ev.rank).filter(v => v != null))].sort((a,b)=>a-b);
-  return { events: allEvents, rows, minT, maxT, totalEvents: allEvents.length, rankValues };
+  return { events: allEvents, rows, minT, maxT: logicalEndT + pad, totalEvents: allEvents.length, rankValues, metaEndT: logicalEndT };
 }
 
 function buildViewRows(){
@@ -803,46 +883,37 @@ function buildViewRows(){
 
   const filteredEvents = rawData.events
     .filter(ev => selectedRank === 'all' || String(ev.rank) === selectedRank)
+    .filter(ev => passesConfidenceFilter(ev))
     .filter(ev => !maskedGroupKeys.has(displayGroupKey(ev)));
 
   let baseRows = groupEventsForDisplay(filteredEvents);
 
   if (mode === 'alpha') {
     baseRows.sort((a,b) => `${a.name}|${a.file}|${a.line}`.localeCompare(`${b.name}|${b.file}|${b.line}`));
-  } else if (mode === 'first') {
-    baseRows.sort((a,b) => a._firstStart !== b._firstStart ? a._firstStart - b._firstStart : a._firstSeq - b._firstSeq);
   } else {
-    baseRows.sort((a,b) => a._firstSeq - b._firstSeq);
+    baseRows.sort((a,b) => a._firstStart !== b._firstStart ? a._firstStart - b._firstStart : a._firstSeq - b._firstSeq);
   }
 
   if (mode === 'instance') {
-    const out = [];
-    for (const g of baseRows){
-      const byAlloc = new Map();
-      for (const ev of g.rows){
-        const ak = allocIdentityKey(ev);
-        if (!byAlloc.has(ak)) byAlloc.set(ak, []);
-        byAlloc.get(ak).push(ev);
-      }
-      for (const [ak, events] of byAlloc.entries()){
-        const first = events[0] || {};
-        out.push({
-          type:'child',
-          key:`instance:${g._groupKey}|${ak}`,
-          parentKey:`group:${g._groupKey}`,
-          label:first.name || g.name || 'unnamed',
-          short:first.function || '',
-          addr:first.addr || '',
-          color:g._color,
-          rows:events,
-          group:g,
-          _firstSeq: Math.min(...events.map(ev => ev._seq ?? Number.MAX_SAFE_INTEGER)),
-          _firstStart: Math.min(...events.map(ev => Number.isFinite(ev.start) ? ev.start : Number.POSITIVE_INFINITY)),
-          _match: q ? events.some(ev => eventMatches(ev, q)) : false
-        });
-      }
-    }
-    out.sort((a,b) => a._firstStart !== b._firstStart ? a._firstStart - b._firstStart : a._firstSeq - b._firstSeq);
+    const out = rawData.events
+      .filter(ev => selectedRank === 'all' || String(ev.rank) === selectedRank)
+      .filter(ev => passesConfidenceFilter(ev))
+      .filter(ev => !maskedGroupKeys.has(displayGroupKey(ev)))
+      .map(ev => ({
+        type:'child',
+        key:`track:${ev._seq}`,
+        parentKey:'',
+        label:ev.name || 'unnamed',
+        short:ev.function || '',
+        addr:ev.addr || '',
+        color:colorForKey(ev.name || ev.addr),
+        rows:[ev],
+        group:null,
+        _firstSeq: ev._seq,
+        _firstStart: Number.isFinite(ev.start) ? ev.start : Number.POSITIVE_INFINITY,
+        _match: q ? eventMatches(ev, q) : false
+      }));
+    out.sort((a,b) => a._firstStart - b._firstStart);
     return out;
   }
 
@@ -969,11 +1040,11 @@ function computeLeftInnerWidth(){
 }
 
 function renderTicks(){
-  const totalW = Math.max(rightBody.clientWidth, (timeMax - timeMin) * pxPerTime);
+  const totalW = Math.max(rightBody.clientWidth, getDisplaySpan() * pxPerTime);
   tickContent.innerHTML = '';
   tickContent.style.width = `${totalW}px`;
 
-  const span = timeMax - timeMin;
+  const span = getDisplaySpan();
   const idealPx = 130;
   const idealStep = span / Math.max(1, Math.floor(totalW / idealPx));
   const pow10 = Math.pow(10, Math.floor(Math.log10(idealStep || 1)));
@@ -1001,6 +1072,15 @@ function renderTicks(){
     tickContent.appendChild(lab);
   }
   tickContent.style.transform = `translateX(${-rightBody.scrollLeft}px)`;
+
+  const logicalEndX = Number.isFinite(metaEndT) ? (metaEndT - timeMin) * pxPerTime : totalW;
+  const headerShadeLeft = Math.max(0, logicalEndX - rightBody.scrollLeft);
+  const headerShadeWidth = Math.max(0, totalW - logicalEndX);
+  headerEndShade.style.left = `${headerShadeLeft}px`;
+  headerEndShade.style.width = `${headerShadeWidth}px`;
+
+  bodyEndShade.style.left = `${logicalEndX}px`;
+  bodyEndShade.style.width = `${Math.max(0, totalW - logicalEndX)}px`;
 }
 
 function showTooltip(html, x, y){
@@ -1033,6 +1113,7 @@ function renderRows(){
 
   leftInner.innerHTML = '';
   timelineLayer.innerHTML = '';
+  timelineLayer.appendChild(bodyEndShade);
   timelineLayer.appendChild(bodySelection);
 
   const totalH = Math.max(1, renderedRows.length * PX_PER_ROW);
@@ -1040,7 +1121,7 @@ function renderRows(){
   leftInner.style.width = `${Math.max(leftBody.clientWidth, cachedLeftInnerWidth || 0)}px`;
   timelineLayer.style.height = `${totalH}px`;
 
-  const contentW = Math.max(rightBody.clientWidth, (timeMax - timeMin) * pxPerTime);
+  const contentW = Math.max(rightBody.clientWidth, getDisplaySpan() * pxPerTime);
   timelineLayer.style.width = `${contentW}px`;
 
   const scrollTop = bodyScroller.scrollTop;
@@ -1081,6 +1162,12 @@ function renderRows(){
     const sw = document.createElement('span');
     sw.className = 'swatch';
     sw.style.background = row.color;
+    if (row.rows?.some(ev => ev.end == null)) sw.classList.add('leak');
+
+    const confLevels = (row.rows || []).map(ev => ev.track_kind === 'reuse' ? (ev.inferred_confidence || 'low') : 'high');
+    if (confLevels.every(c => c === 'low')) sw.classList.add('lowConfidence');
+    else if (confLevels.every(c => c === 'medium' || c === 'low')) sw.classList.add('mediumConfidence');
+
     label.appendChild(sw);
 
     const txt = document.createElement('div');
@@ -1103,6 +1190,11 @@ function renderRows(){
       tlRow.style.right = '0';
       tlRow.style.top = `${y}px`;
       tlRow.style.height = `${PX_PER_ROW}px`;
+      tlRow.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        const first = row.rows?.[0] || {};
+        openContextMenu(e.clientX, e.clientY, getRowPath(row), first.addr || '', row.group?._groupKey || displayGroupKey(first) || '', first.directive_text || row.group?.directive_text || '');
+      });
       timelineLayer.appendChild(tlRow);
       continue;
     }
@@ -1118,19 +1210,24 @@ function renderRows(){
         e.clientY,
         getRowPath(row),
         first.addr || '',
-        row.group?._groupKey || '',
+        row.group?._groupKey || displayGroupKey(first) || '',
         first.directive_text || row.group?.directive_text || ''
       );
     });
     leftInner.appendChild(label);
 
     const tlRow = document.createElement('div');
-    tlRow.className = 'timelineRow';
+    tlRow.className = `timelineRow${row._match ? ' matchRow' : ''}`;
     tlRow.style.position = 'absolute';
     tlRow.style.left = '0';
     tlRow.style.right = '0';
     tlRow.style.top = `${y}px`;
     tlRow.style.height = `${PX_PER_ROW}px`;
+    tlRow.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      const first = row.rows?.[0] || {};
+      openContextMenu(e.clientX, e.clientY, getRowPath(row), first.addr || '', row.group?._groupKey || displayGroupKey(first) || '', first.directive_text || row.group?.directive_text || '');
+    });
 
     for (const ev of row.rows){
       const start = Number.isFinite(ev.start) ? ev.start : timeMin;
@@ -1139,7 +1236,10 @@ function renderRows(){
       const width = Math.max(2, (end - start) * pxPerTime);
       const bar = document.createElement('div');
       const hasNoEnd = ev.end == null;
-      bar.className = `eventBar ${row.type === 'group' ? 'aggregate' : ''} ${hasNoEnd ? 'noEnd' : ''}`;
+      const confidenceClass = ev.track_kind === 'reuse'
+        ? (ev.inferred_confidence === 'low' ? 'lowConfidence' : ev.inferred_confidence === 'medium' ? 'mediumConfidence' : '')
+        : '';
+      bar.className = `eventBar ${row.type === 'group' ? 'aggregate' : ''} ${hasNoEnd ? 'noEnd' : ''} ${confidenceClass}`;
       bar.style.left = `${left}px`;
       bar.style.width = `${width}px`;
       const fill = getEventColor(ev, row);
@@ -1215,11 +1315,12 @@ function zoomBy(factor, anchorClientX = null){
     ? viewportWidth / 2
     : Math.max(0, Math.min(viewportWidth, anchorClientX - viewportLeft));
   const anchorTime = timeMin + (rightBody.scrollLeft + anchorOffset) / Math.max(oldPxPerTime, 1e-12);
-  pxPerTime = Math.max(1e-12, pxPerTime * factor);
+  const newPxPerTime = Math.max(1e-12, oldPxPerTime * factor);
+  const maxScrollLeft = Math.max(0, getDisplaySpan() * newPxPerTime - viewportWidth);
+  const targetScrollLeft = Math.max(0, Math.min(maxScrollLeft, (anchorTime - timeMin) * newPxPerTime - anchorOffset));
+  pxPerTime = newPxPerTime;
   renderAll();
-  const targetScrollLeft = (anchorTime - timeMin) * pxPerTime - anchorOffset;
-  const maxScrollLeft = Math.max(0, (timeMax - timeMin) * pxPerTime - viewportWidth);
-  rightBody.scrollLeft = Math.max(0, Math.min(maxScrollLeft, targetScrollLeft));
+  rightBody.scrollLeft = targetScrollLeft;
   tickContent.style.transform = `translateX(${-rightBody.scrollLeft}px)`;
   syncBottomScrollbar();
 }
@@ -1245,19 +1346,20 @@ function applySelectionZoom(){
   const b = Math.max(dragZoom.startContentX, dragZoom.currentContentX);
   const dx = b - a;
   if (dx < MIN_DRAG_PX) return clearSelectionOverlay();
-  const t0 = timeMin + a / pxPerTime;
-  const t1 = timeMin + b / pxPerTime;
+  const t0 = timeMin + a / Math.max(pxPerTime, 1e-12);
+  const t1 = timeMin + b / Math.max(pxPerTime, 1e-12);
   const span = Math.max(1e-12, t1 - t0);
   const pad = span * 0.05;
-  const fullSpan = Math.max(1e-12, timeMax - timeMin);
-  let zoomStart = t0 - pad;
-  let zoomEnd = t1 + pad;
-  if (zoomStart < timeMin) { zoomEnd = Math.min(timeMax, zoomEnd + (timeMin - zoomStart)); zoomStart = timeMin; }
-  if (zoomEnd > timeMax) { zoomStart = Math.max(timeMin, zoomStart - (zoomEnd - timeMax)); zoomEnd = timeMax; }
-  const newSpan = Math.max(1e-12, Math.min(fullSpan, zoomEnd - zoomStart));
-  pxPerTime = rightBody.clientWidth / newSpan;
+  const zoomStart = t0 - pad;
+  const zoomEnd = t1 + pad;
+  const clampedStart = Math.max(timeMin, zoomStart);
+  const clampedEnd = Math.min(timeMax, zoomEnd);
+  const newSpan = Math.max(1e-12, clampedEnd - clampedStart);
+  const newPxPerTime = rightBody.clientWidth / newSpan;
+  const targetScrollLeft = Math.max(0, Math.min(Math.max(0, getDisplaySpan() * newPxPerTime - rightBody.clientWidth), (clampedStart - timeMin) * newPxPerTime));
+  pxPerTime = newPxPerTime;
   renderAll();
-  rightBody.scrollLeft = Math.max(0, (zoomStart - timeMin) * pxPerTime);
+  rightBody.scrollLeft = targetScrollLeft;
   tickContent.style.transform = `translateX(${-rightBody.scrollLeft}px)`;
   syncBottomScrollbar();
   clearSelectionOverlay();
@@ -1295,23 +1397,34 @@ rightBody.addEventListener('wheel', (e) => {
   }
 }, { passive:false });
 
-tickViewport.addEventListener('mousedown', (e) => {
-  if (!rawData || e.button !== 0) return;
-  e.preventDefault();
-  closeContextMenu();
-  closeDirectiveModal();
-  const rect = tickViewport.getBoundingClientRect();
-  const localX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+function beginDragZoom(clientX, viewportRect){
+  const localX = Math.max(0, Math.min(viewportRect.width, clientX - viewportRect.left));
   const contentX = rightBody.scrollLeft + localX;
   dragZoom = { startContentX: contentX, currentContentX: contentX };
   headerSelection.classList.remove('hidden');
   bodySelection.classList.remove('hidden');
   setSelectionOverlay(contentX, contentX);
+}
+
+tickViewport.addEventListener('mousedown', (e) => {
+  if (!rawData || e.button !== 0) return;
+  e.preventDefault();
+  closeContextMenu();
+  closeDirectiveModal();
+  beginDragZoom(e.clientX, tickViewport.getBoundingClientRect());
+});
+
+rightBody.addEventListener('mousedown', (e) => {
+  if (!rawData || e.button !== 0) return;
+  e.preventDefault();
+  closeContextMenu();
+  closeDirectiveModal();
+  beginDragZoom(e.clientX, rightBody.getBoundingClientRect());
 });
 
 window.addEventListener('mousemove', (e) => {
   if (!dragZoom) return;
-  const rect = tickViewport.getBoundingClientRect();
+  const rect = rightBody.getBoundingClientRect();
   const localX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
   dragZoom.currentContentX = rightBody.scrollLeft + localX;
   setSelectionOverlay(dragZoom.startContentX, dragZoom.currentContentX);
@@ -1324,6 +1437,13 @@ window.addEventListener('mouseup', (e) => {
 });
 
 tickViewport.addEventListener('contextmenu', (e) => {
+  if (dragZoom){
+    e.preventDefault();
+    clearSelectionOverlay();
+  }
+});
+
+rightBody.addEventListener('contextmenu', (e) => {
   if (dragZoom){
     e.preventDefault();
     clearSelectionOverlay();
@@ -1384,6 +1504,9 @@ rankFilter.addEventListener('change', () => {
   leftWidthDirty = true;
   scheduleRenderAll();
 });
+confidenceFilter.addEventListener('change', () => {
+  scheduleRenderAll();
+});
 zoomInBtn.addEventListener('click', () => zoomBy(1.25));
 zoomOutBtn.addEventListener('click', () => zoomBy(1 / 1.25));
 fitBtn.addEventListener('click', fitToWindow);
@@ -1397,7 +1520,7 @@ document.addEventListener('click', () => closeContextMenu());
 document.addEventListener('scroll', () => closeContextMenu(), true);
 document.addEventListener('contextmenu', (e) => {
   if (dragZoom) return;
-  if (!e.target.closest('.rowLabel')) closeContextMenu();
+  if (!e.target.closest('.rowLabel') && !e.target.closest('.timelineRow')) closeContextMenu();
 });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
@@ -1443,6 +1566,7 @@ fileInput.addEventListener('change', async (e) => {
     rawData = normalizeData(parsed);
     timeMin = rawData.minT;
     timeMax = rawData.maxT;
+    metaEndT = rawData.metaEndT;
     expandedCounts = new Map();
     maskedGroupKeys = new Set();
     leftWidthDirty = true;
@@ -1456,3 +1580,4 @@ fileInput.addEventListener('change', async (e) => {
 </script>
 </body>
 </html>
+
